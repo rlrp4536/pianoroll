@@ -122,26 +122,42 @@ function parseMidi(buffer){
  if(str(4)!=='MThd')throw Error('표준 MIDI 파일(.mid, .midi)을 선택해 주세요.');
  const h=u32();if(h<6)throw Error('잘못된 MIDI 헤더입니다.');need(h);const format=u16(),tracks=u16(),division=u16();p+=h-6;
  if(format>1)throw Error('Format 0 또는 1 MIDI 파일을 사용해 주세요.');if(!division)throw Error('MIDI 시간 해상도가 잘못되었습니다.');
- const tempos=[{tick:0,value:500000}],raw=[],rawPedals=[];let endTick=0,sequence=0;
+ const tempos=[{tick:0,value:500000}],raw=[],rawPedals=[],events=[];let endTick=0,sequence=0;
  for(let t=0;t<tracks;t++){
   if(str(4)!=='MTrk')throw Error('MIDI 트랙 정보를 읽을 수 없습니다.');const size=u32(),end=p+size;if(end>data.length)throw Error('MIDI 트랙이 잘렸습니다.');limit=end;
-  let tick=0,running=0;const active=new Map(),held=new Map(),pedal=new Map();
-  // Preserve physical key release independently of the pedal's sounding tail.
-  const finish=(n,at)=>{n.keyEndTick??=Math.max(n.tick+1,at);n.end=Math.max(n.keyEndTick,at);raw.push(n);};
+  let tick=0,running=0;
   while(p<end){tick+=vlq();let s=u8();if(s<128){if(!running)throw Error('잘못된 MIDI 이벤트입니다.');p--;s=running;}else if(s<240)running=s;
    if(s===255){const type=u8(),len=vlq();need(len);if(type===81&&len===3){const value=data[p]*65536+data[p+1]*256+data[p+2];if(value>0)tempos.push({tick,value});}p+=len;if(type===47)break;continue;}
    if(s===240||s===247){running=0;let len=vlq();need(len);p+=len;continue;}if(s>=240)throw Error('지원하지 않는 MIDI 이벤트입니다.');
-   const type=s>>4,ch=s&15,a=u8(),b=(type===12||type===13)?0:u8();if(a>127||b>127)throw Error('잘못된 MIDI 데이터입니다.');const key=ch+':'+a;
-   if(type===9&&b){if(!active.has(key))active.set(key,[]);active.get(key).push({tick,midi:a,velocity:b/127,track:t,channel:ch,id:sequence++});}
-   if(type===8||(type===9&&!b)){const queue=active.get(key);if(queue?.length){const n=queue.shift();n.keyEndTick=Math.max(n.tick+1,tick);if(pedal.has(ch)){if(!held.has(ch))held.set(ch,[]);held.get(ch).push(n);}else finish(n,tick);}}
-   if(type===11&&a===64){if(b>=64){if(!pedal.has(ch))pedal.set(ch,tick);}else{if(pedal.has(ch))rawPedals.push({tick:pedal.get(ch),end:tick,track:t,channel:ch});pedal.delete(ch);for(const n of held.get(ch)||[])finish(n,tick);held.delete(ch);}}
+   const type=s>>4,ch=s&15,a=u8(),b=(type===12||type===13)?0:u8();if(a>127||b>127)throw Error('잘못된 MIDI 데이터입니다.');
+   if(type===9||type===8||(type===11&&a===64))events.push({tick,type,ch,a,b,track:t,id:type===9&&b?sequence++:null});
   }
-  for(const q of active.values())for(const n of q)finish(n,tick);for(const q of held.values())for(const n of q)finish(n,tick);for(const [ch,start] of pedal)rawPedals.push({tick:start,end:tick,track:t,channel:ch});endTick=Math.max(endTick,tick);p=end;limit=data.length;
+  events.push({tick,type:'end',track:t});endTick=Math.max(endTick,tick);p=end;limit=data.length;
  }
+ // Controllers belong to a MIDI channel, not an SMF track. Merge tracks first.
+ // Stable ordering retains each track's order for events sharing a timestamp.
+ events.sort((a,b)=>a.tick-b.tick);
+ const active=new Map(),held=new Map(),pedal=new Map();
+ const finish=(n,at)=>{n.keyEndTick??=Math.max(n.tick+1,at);n.end=Math.max(n.keyEndTick,at);raw.push(n);};
+ const release=(n,at)=>{n.keyEndTick=Math.max(n.tick+1,at);if(pedal.has(n.channel)){if(!held.has(n.channel))held.set(n.channel,[]);held.get(n.channel).push(n);}else finish(n,at);};
+ for(const e of events){
+  const {tick,type,ch,a,b,track}=e,key=track+':'+ch+':'+a;
+  if(type==='end'){
+   // An ended controller track must not release notes on another track.
+   for(const [k,q] of active)if(q[0]?.track===track){for(const n of q)release(n,tick);active.delete(k);}
+  }else if(type===9&&b){if(!active.has(key))active.set(key,[]);active.get(key).push({tick,midi:a,velocity:b/127,track,channel:ch,id:e.id});
+  }else if(type===8||(type===9&&!b)){const q=active.get(key);if(q?.length){release(q.shift(),tick);if(!q.length)active.delete(key);}
+  }else if(type===11&&a===64){
+   if(b>=64){if(!pedal.has(ch))pedal.set(ch,{tick,track});}
+   else{const down=pedal.get(ch);if(down)rawPedals.push({tick:down.tick,end:tick,track:down.track,channel:ch});pedal.delete(ch);for(const n of held.get(ch)||[])finish(n,tick);held.delete(ch);}
+  }
+ }
+ for(const q of held.values())for(const n of q)finish(n,endTick);
+ for(const [ch,down] of pedal)rawPedals.push({tick:down.tick,end:endTick,track:down.track,channel:ch});
  tempos.sort((a,b)=>a.tick-b.tick);const map=[];let last=0,seconds=0,tempo=500000;
  for(const e of tempos){seconds+=(e.tick-last)*tempo/1e6/(division&32767);map.push({tick:e.tick,time:seconds,value:e.value});last=e.tick;tempo=e.value;}
  const toSeconds=tick=>{if(division&32768){let fps=256-(division>>8);if(fps===29)fps=29.97;const sub=division&255;if(!sub)throw Error('잘못된 SMPTE 시간 정보입니다.');return tick/(fps*sub);}let lo=0,hi=map.length-1;while(lo<hi){let m=Math.ceil((lo+hi)/2);if(map[m].tick<=tick)lo=m;else hi=m-1;}const e=map[lo];return e.time+(tick-e.tick)*e.value/1e6/division;};
- const notes=raw.map(n=>({...n,start:toSeconds(n.tick),keyEnd:toSeconds(n.keyEndTick),end:toSeconds(n.end)})).sort((a,b)=>a.start-b.start);
+ const notes=raw.map(n=>({...n,start:toSeconds(n.tick),keyEnd:toSeconds(n.keyEndTick),end:toSeconds(n.end)})).sort((a,b)=>a.start-b.start||a.id-b.id);
  const pedals=rawPedals.filter(e=>e.end>e.tick).map(e=>({start:toSeconds(e.tick),end:toSeconds(e.end),track:e.track,channel:e.channel})).sort((a,b)=>a.start-b.start);
  if(!notes.length)throw Error('이 파일에는 재생할 노트가 없습니다.');let duration=toSeconds(endTick);for(const n of notes)duration=Math.max(duration,n.end);return{notes,pedals,duration:duration+.4,tracks,tempo:Math.round(60000000/(tempos.filter(e=>e.tick===0).at(-1)?.value||500000))};
 }
