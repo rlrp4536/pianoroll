@@ -1,8 +1,0 @@
-[GD] Kawai ES100 Concert Grand 1 [V3]
-Source page: https://musical-artifacts.com/artifacts/2922
-Original file supplied by the user: [GD] Kawai ES100 Concert Grand 1 [V3].sf2
-Embedded metadata: IPRD = GDCRAFTYT (Kyle); ICOP = Kawai; ICMT = Recorded at 24 bit 48khz; ISFT = Polyphone.
-Conversion: 88 lossless stereo FLAC files, original 24-bit / 48 kHz samples retained without resampling or lossy compression.
-All 41 velocity zones retain their declared key ranges, low-pass cutoffs and release times. No sample looping is declared in this SF2.
-SF2 reverb-send is replaced by NoteFall's adjustable reverb. This browser sampler is not a complete SF2 synthesizer and does not claim bit-identical rendering.
-No explicit redistribution license was embedded in the supplied SF2. Original attribution is retained; no CC0 or other license is asserted for these samples.
